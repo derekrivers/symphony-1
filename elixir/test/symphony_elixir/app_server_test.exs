@@ -1394,6 +1394,83 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server surfaces codex error notifications at warning level" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-error-notification-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-94")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-94"}}}'
+            ;;
+          3)
+            printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-94"}}}'
+            ;;
+          4)
+            printf '%s\n' '{"method":"codex/event/error","params":{"message":"The gpt-5.5 model requires a newer version of Codex"}}'
+            printf '%s\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-error-notification",
+        identifier: "MT-94",
+        title: "Surface codex error notification",
+        description: "Ensure codex error notifications are not hidden at debug level",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-94",
+        labels: ["backend"]
+      }
+
+      test_pid = self()
+      on_message = fn message -> send(test_pid, {:app_server_message, message}) end
+
+      log =
+        capture_log(fn ->
+          assert {:ok, _result} =
+                   AppServer.run(workspace, "Surface codex error", issue, on_message: on_message)
+        end)
+
+      assert_received {:app_server_message, %{event: :notification}}
+      assert_received {:app_server_message, %{event: :turn_completed}}
+      assert log =~ "[warning]"
+      assert log =~ "Codex error notification: \"codex/event/error\""
+      assert log =~ "The gpt-5.5 model requires a newer version of Codex"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server does not pass tracker credentials to the local Codex child" do
     test_root =
       Path.join(

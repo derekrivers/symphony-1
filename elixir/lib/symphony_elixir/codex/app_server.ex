@@ -536,31 +536,60 @@ defmodule SymphonyElixir.Codex.AppServer do
         {:error, {:approval_required, payload}}
 
       :unhandled ->
-        if needs_input?(method, payload) do
-          emit_message(
-            on_message,
-            :turn_input_required,
-            %{payload: payload, raw: payload_string},
-            metadata
-          )
+        cond do
+          needs_input?(method, payload) ->
+            emit_message(
+              on_message,
+              :turn_input_required,
+              %{payload: payload, raw: payload_string},
+              metadata
+            )
 
-          {:error, {:turn_input_required, payload}}
-        else
-          emit_message(
-            on_message,
-            :notification,
-            %{
-              payload: payload,
-              raw: payload_string
-            },
-            metadata
-          )
+            {:error, {:turn_input_required, payload}}
 
-          Logger.debug("Codex notification: #{inspect(method)}")
-          receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+          error_notification?(method) ->
+            emit_message(
+              on_message,
+              :notification,
+              %{
+                payload: payload,
+                raw: payload_string
+              },
+              metadata
+            )
+
+            # Codex reports per-turn failures (e.g. a rejected model) as an error
+            # notification rather than turn/failed. Logging it at :debug hides a real
+            # failure behind clean-looking completions, so the run silently burns its
+            # turn budget. Surface it at :warning so it is visible above debug.
+            Logger.warning(
+              "Codex error notification: #{inspect(method)} #{inspect(error_notification_detail(payload))}"
+            )
+
+            receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+
+          true ->
+            emit_message(
+              on_message,
+              :notification,
+              %{
+                payload: payload,
+                raw: payload_string
+              },
+              metadata
+            )
+
+            Logger.debug("Codex notification: #{inspect(method)}")
+            receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
         end
     end
   end
+
+  defp error_notification?(method) when is_binary(method), do: String.ends_with?(method, "error")
+  defp error_notification?(_method), do: false
+
+  defp error_notification_detail(%{"params" => params}), do: params
+  defp error_notification_detail(payload), do: payload
 
   defp maybe_handle_approval_request(
          port,
