@@ -1482,7 +1482,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
            }
   end
 
-  test "runtime sandbox policy resolution passes explicit policies through unchanged" do
+  test "runtime sandbox policy resolution injects the workspace .git into explicit workspaceWrite policies" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -1503,6 +1503,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         }
       )
 
+      # No .git in the workspace yet: policy passes through unchanged.
       assert {:ok, runtime_settings} = Config.codex_runtime_settings(issue_workspace)
 
       assert runtime_settings.turn_sandbox_policy == %{
@@ -1511,6 +1512,53 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                "networkAccess" => true
              }
 
+      # Once the workspace holds a git repo, its .git is appended as an
+      # absolute writable root so agents can branch/commit/push.
+      git_root = Path.join(issue_workspace, ".git")
+      File.mkdir_p!(git_root)
+
+      assert {:ok, runtime_settings} = Config.codex_runtime_settings(issue_workspace)
+
+      assert runtime_settings.turn_sandbox_policy == %{
+               "type" => "workspaceWrite",
+               "writableRoots" => ["relative/path", git_root],
+               "networkAccess" => true
+             }
+
+      # Injection is idempotent when the .git root is already listed.
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_turn_sandbox_policy: %{
+          type: "workspaceWrite",
+          writableRoots: [git_root]
+        }
+      )
+
+      assert {:ok, runtime_settings} = Config.codex_runtime_settings(issue_workspace)
+
+      assert runtime_settings.turn_sandbox_policy == %{
+               "type" => "workspaceWrite",
+               "writableRoots" => [git_root]
+             }
+
+      # Remote workspaces skip the local existence check and stay unexpanded.
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_turn_sandbox_policy: %{
+          type: "workspaceWrite",
+          writableRoots: []
+        }
+      )
+
+      assert {:ok, runtime_settings} =
+               Config.codex_runtime_settings("/remote/workspaces/MT-100", remote: true)
+
+      assert runtime_settings.turn_sandbox_policy == %{
+               "type" => "workspaceWrite",
+               "writableRoots" => ["/remote/workspaces/MT-100/.git"]
+             }
+
+      # Non-workspaceWrite policies still pass through unchanged.
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         codex_turn_sandbox_policy: %{

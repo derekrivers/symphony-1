@@ -321,7 +321,7 @@ defmodule SymphonyElixir.Config.Schema do
   def resolve_turn_sandbox_policy(settings, workspace \\ nil) do
     case settings.codex.turn_sandbox_policy do
       %{} = policy ->
-        policy
+        inject_workspace_git_root(policy, workspace, local: true)
 
       _ ->
         workspace
@@ -336,7 +336,7 @@ defmodule SymphonyElixir.Config.Schema do
   def resolve_runtime_turn_sandbox_policy(settings, workspace \\ nil, opts \\ []) do
     case settings.codex.turn_sandbox_policy do
       %{} = policy ->
-        {:ok, policy}
+        {:ok, inject_workspace_git_root(policy, workspace, local: not Keyword.get(opts, :remote, false))}
 
       _ ->
         workspace
@@ -566,6 +566,33 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp normalize_secret_value(_value), do: nil
+
+  # Codex's workspaceWrite sandbox marks the top-level .git of each writable
+  # root read-only, which blocks branch/commit/push at handoff. Listing the
+  # .git directory as its own writable root exempts it. The app-server API
+  # rejects relative writableRoots ("AbsolutePathBuf deserialized without a
+  # base path"), so the path must be resolved against the issue workspace
+  # here rather than configured statically in WORKFLOW.md.
+  defp inject_workspace_git_root(%{"type" => "workspaceWrite"} = policy, workspace, opts)
+       when is_binary(workspace) and workspace != "" do
+    local? = Keyword.get(opts, :local, true)
+    base = if local?, do: Path.expand(workspace), else: workspace
+    git_root = Path.join(base, ".git")
+
+    roots =
+      case Map.get(policy, "writableRoots") do
+        roots when is_list(roots) -> roots
+        _ -> []
+      end
+
+    cond do
+      git_root in roots -> policy
+      local? and not File.dir?(git_root) -> policy
+      true -> Map.put(policy, "writableRoots", roots ++ [git_root])
+    end
+  end
+
+  defp inject_workspace_git_root(policy, _workspace, _opts), do: policy
 
   defp default_turn_sandbox_policy(workspace) do
     %{
