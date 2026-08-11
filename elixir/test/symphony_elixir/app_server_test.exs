@@ -165,7 +165,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server passes explicit turn sandbox policies through unchanged" do
+  test "app server injects the ATL workspace and .git into the turn/start sandbox policy" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -174,7 +174,7 @@ defmodule SymphonyElixir.AppServerTest do
 
     try do
       workspace_root = Path.join(test_root, "workspaces")
-      workspace = Path.join(workspace_root, "MT-1001")
+      workspace = Path.join(workspace_root, "ATL-424")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-supported-turn-policies.trace")
       previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
@@ -188,7 +188,7 @@ defmodule SymphonyElixir.AppServerTest do
       end)
 
       System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
-      File.mkdir_p!(workspace)
+      File.mkdir_p!(Path.join(workspace, ".git"))
 
       File.write!(codex_binary, """
       #!/bin/sh
@@ -204,10 +204,10 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":1,"result":{}}'
             ;;
           2)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-1001"}}}'
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-atl-424"}}}'
             ;;
           3)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1001"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-atl-424"}}}'
             ;;
           4)
             printf '%s\\n' '{"method":"turn/completed"}'
@@ -224,22 +224,27 @@ defmodule SymphonyElixir.AppServerTest do
 
       issue = %Issue{
         id: "issue-supported-turn-policies",
-        identifier: "MT-1001",
-        title: "Validate explicit turn sandbox policy passthrough",
-        description: "Ensure runtime startup forwards configured turn sandbox policies unchanged",
+        identifier: "ATL-424",
+        title: "Validate Atlas workspace sandbox policy",
+        description: "Ensure the ATL workspace and its .git directory are writable",
         state: "In Progress",
-        url: "https://example.org/issues/MT-1001",
+        url: "https://example.org/issues/ATL-424",
         labels: ["backend"]
       }
 
       policy_cases = [
-        %{"type" => "dangerFullAccess"},
-        %{"type" => "externalSandbox", "profile" => "remote-ci"},
-        %{"type" => "workspaceWrite", "writableRoots" => ["relative/path"], "networkAccess" => true},
-        %{"type" => "futureSandbox", "nested" => %{"flag" => true}}
+        {%{"type" => "dangerFullAccess"}, %{"type" => "dangerFullAccess"}},
+        {%{"type" => "externalSandbox", "profile" => "remote-ci"}, %{"type" => "externalSandbox", "profile" => "remote-ci"}},
+        {%{"type" => "workspaceWrite", "writableRoots" => [], "networkAccess" => true},
+         %{
+           "type" => "workspaceWrite",
+           "writableRoots" => [workspace, Path.join(workspace, ".git")],
+           "networkAccess" => true
+         }},
+        {%{"type" => "futureSandbox", "nested" => %{"flag" => true}}, %{"type" => "futureSandbox", "nested" => %{"flag" => true}}}
       ]
 
-      Enum.each(policy_cases, fn configured_policy ->
+      Enum.each(policy_cases, fn {configured_policy, expected_policy} ->
         File.rm(trace_file)
 
         write_workflow_file!(Workflow.workflow_file_path(),
@@ -260,7 +265,7 @@ defmodule SymphonyElixir.AppServerTest do
                    |> Jason.decode!()
                    |> then(fn payload ->
                      payload["method"] == "turn/start" &&
-                       get_in(payload, ["params", "sandboxPolicy"]) == configured_policy
+                       get_in(payload, ["params", "sandboxPolicy"]) == expected_policy
                    end)
                  else
                    false

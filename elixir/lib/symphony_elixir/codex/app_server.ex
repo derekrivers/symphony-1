@@ -584,7 +584,6 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp error_notification?(method) when is_binary(method), do: String.ends_with?(method, "error")
-  defp error_notification?(_method), do: false
 
   defp error_notification_detail(%{"params" => params}), do: params
   defp error_notification_detail(payload), do: payload

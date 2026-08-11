@@ -1521,7 +1521,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       assert runtime_settings.turn_sandbox_policy == %{
                "type" => "workspaceWrite",
-               "writableRoots" => ["relative/path", git_root],
+               "writableRoots" => ["relative/path", issue_workspace, git_root],
                "networkAccess" => true
              }
 
@@ -1530,7 +1530,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         workspace_root: workspace_root,
         codex_turn_sandbox_policy: %{
           type: "workspaceWrite",
-          writableRoots: [git_root]
+          writableRoots: [issue_workspace, git_root]
         }
       )
 
@@ -1538,7 +1538,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       assert runtime_settings.turn_sandbox_policy == %{
                "type" => "workspaceWrite",
-               "writableRoots" => [git_root]
+               "writableRoots" => [issue_workspace, git_root]
              }
 
       # Remote workspaces skip the local existence check and stay unexpanded.
@@ -1555,7 +1555,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       assert runtime_settings.turn_sandbox_policy == %{
                "type" => "workspaceWrite",
-               "writableRoots" => ["/remote/workspaces/MT-100/.git"]
+               "writableRoots" => ["/remote/workspaces/MT-100", "/remote/workspaces/MT-100/.git"]
              }
 
       # Non-workspaceWrite policies still pass through unchanged.

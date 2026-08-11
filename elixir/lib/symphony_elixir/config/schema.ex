@@ -568,8 +568,9 @@ defmodule SymphonyElixir.Config.Schema do
   defp normalize_secret_value(_value), do: nil
 
   # Codex's workspaceWrite sandbox marks the top-level .git of each writable
-  # root read-only, which blocks branch/commit/push at handoff. Listing the
-  # .git directory as its own writable root exempts it. The app-server API
+  # root read-only, which blocks branch/commit/push at handoff. Listing both
+  # the workspace and .git directory as writable roots preserves workspace
+  # access while exempting its Git metadata. The app-server API
   # rejects relative writableRoots ("AbsolutePathBuf deserialized without a
   # base path"), so the path must be resolved against the issue workspace
   # here rather than configured statically in WORKFLOW.md.
@@ -579,16 +580,13 @@ defmodule SymphonyElixir.Config.Schema do
     base = if local?, do: Path.expand(workspace), else: workspace
     git_root = Path.join(base, ".git")
 
-    roots =
-      case Map.get(policy, "writableRoots") do
-        roots when is_list(roots) -> roots
-        _ -> []
-      end
+    roots = Map.get(policy, "writableRoots", [])
 
-    cond do
-      git_root in roots -> policy
-      local? and not File.dir?(git_root) -> policy
-      true -> Map.put(policy, "writableRoots", roots ++ [git_root])
+    if local? and not File.dir?(git_root) do
+      policy
+    else
+      injected_roots = Enum.reject([base, git_root], &(&1 in roots))
+      Map.put(policy, "writableRoots", roots ++ injected_roots)
     end
   end
 
