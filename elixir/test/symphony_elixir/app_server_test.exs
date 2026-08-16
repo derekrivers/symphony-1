@@ -165,7 +165,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server passes explicit turn sandbox policies through unchanged" do
+  test "app server injects the ATL workspace and .git into the turn/start sandbox policy" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -174,7 +174,7 @@ defmodule SymphonyElixir.AppServerTest do
 
     try do
       workspace_root = Path.join(test_root, "workspaces")
-      workspace = Path.join(workspace_root, "MT-1001")
+      workspace = Path.join(workspace_root, "ATL-424")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-supported-turn-policies.trace")
       previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
@@ -188,7 +188,7 @@ defmodule SymphonyElixir.AppServerTest do
       end)
 
       System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
-      File.mkdir_p!(workspace)
+      File.mkdir_p!(Path.join(workspace, ".git"))
 
       File.write!(codex_binary, """
       #!/bin/sh
@@ -204,10 +204,10 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":1,"result":{}}'
             ;;
           2)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-1001"}}}'
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-atl-424"}}}'
             ;;
           3)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1001"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-atl-424"}}}'
             ;;
           4)
             printf '%s\\n' '{"method":"turn/completed"}'
@@ -224,22 +224,27 @@ defmodule SymphonyElixir.AppServerTest do
 
       issue = %Issue{
         id: "issue-supported-turn-policies",
-        identifier: "MT-1001",
-        title: "Validate explicit turn sandbox policy passthrough",
-        description: "Ensure runtime startup forwards configured turn sandbox policies unchanged",
+        identifier: "ATL-424",
+        title: "Validate Atlas workspace sandbox policy",
+        description: "Ensure the ATL workspace and its .git directory are writable",
         state: "In Progress",
-        url: "https://example.org/issues/MT-1001",
+        url: "https://example.org/issues/ATL-424",
         labels: ["backend"]
       }
 
       policy_cases = [
-        %{"type" => "dangerFullAccess"},
-        %{"type" => "externalSandbox", "profile" => "remote-ci"},
-        %{"type" => "workspaceWrite", "writableRoots" => ["relative/path"], "networkAccess" => true},
-        %{"type" => "futureSandbox", "nested" => %{"flag" => true}}
+        {%{"type" => "dangerFullAccess"}, %{"type" => "dangerFullAccess"}},
+        {%{"type" => "externalSandbox", "profile" => "remote-ci"}, %{"type" => "externalSandbox", "profile" => "remote-ci"}},
+        {%{"type" => "workspaceWrite", "writableRoots" => [], "networkAccess" => true},
+         %{
+           "type" => "workspaceWrite",
+           "writableRoots" => [workspace, Path.join(workspace, ".git")],
+           "networkAccess" => true
+         }},
+        {%{"type" => "futureSandbox", "nested" => %{"flag" => true}}, %{"type" => "futureSandbox", "nested" => %{"flag" => true}}}
       ]
 
-      Enum.each(policy_cases, fn configured_policy ->
+      Enum.each(policy_cases, fn {configured_policy, expected_policy} ->
         File.rm(trace_file)
 
         write_workflow_file!(Workflow.workflow_file_path(),
@@ -260,7 +265,7 @@ defmodule SymphonyElixir.AppServerTest do
                    |> Jason.decode!()
                    |> then(fn payload ->
                      payload["method"] == "turn/start" &&
-                       get_in(payload, ["params", "sandboxPolicy"]) == configured_policy
+                       get_in(payload, ["params", "sandboxPolicy"]) == expected_policy
                    end)
                  else
                    false
@@ -411,6 +416,103 @@ defmodule SymphonyElixir.AppServerTest do
                AppServer.run(workspace, "Needs MCP input", issue)
 
       assert payload["method"] == "mcpServer/elicitation/request"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server auto-declines MCP elicitation requests when approval policy is never" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-elicitation-decline-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-189")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-elicitation-decline.trace")
+      previous_trace = System.get_env("SYMP_TEST_CODex_TRACE")
+
+      on_exit(fn ->
+        if is_binary(previous_trace) do
+          System.put_env("SYMP_TEST_CODex_TRACE", previous_trace)
+        else
+          System.delete_env("SYMP_TEST_CODex_TRACE")
+        end
+      end)
+
+      System.put_env("SYMP_TEST_CODex_TRACE", trace_file)
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODex_TRACE:-/tmp/codex-elicitation-decline.trace}"
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' \"$line\" >> \"$trace_file\"
+
+        case \"$count\" in
+          1)
+            printf '%s\\n' '{\"id\":1,\"result\":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-189\"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-189\"}}}'
+            printf '%s\\n' '{\"id\":42,\"method\":\"mcpServer/elicitation/request\",\"params\":{\"serverName\":\"codex_apps\",\"message\":\"Allow GitHub to create a branch?\",\"mode\":\"form\"}}'
+            ;;
+          5)
+            printf '%s\\n' '{\"method\":\"turn/completed\"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_approval_policy: "never"
+      )
+
+      issue = %Issue{
+        id: "issue-elicitation-decline",
+        identifier: "MT-189",
+        title: "Elicitation decline",
+        description: "Connector prompts must not kill headless runs",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-189",
+        labels: ["backend"]
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "Handle connector prompt", issue)
+
+      trace = File.read!(trace_file)
+      lines = String.split(trace, "\n", trim: true)
+
+      assert Enum.any?(lines, fn line ->
+               if String.starts_with?(line, "JSON:") do
+                 payload =
+                   line
+                   |> String.trim_leading("JSON:")
+                   |> Jason.decode!()
+
+                 payload["id"] == 42 and get_in(payload, ["result", "action"]) == "decline"
+               else
+                 false
+               end
+             end)
     after
       File.rm_rf(test_root)
     end
@@ -1389,6 +1491,83 @@ defmodule SymphonyElixir.AppServerTest do
 
       assert_received {:app_server_message, %{event: :malformed, payload: "{\"method\":\"turn/completed\""}}
       assert_received {:app_server_message, %{event: :turn_completed}}
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server surfaces codex error notifications at warning level" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-error-notification-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-94")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-94"}}}'
+            ;;
+          3)
+            printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-94"}}}'
+            ;;
+          4)
+            printf '%s\n' '{"method":"codex/event/error","params":{"message":"The gpt-5.5 model requires a newer version of Codex"}}'
+            printf '%s\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-error-notification",
+        identifier: "MT-94",
+        title: "Surface codex error notification",
+        description: "Ensure codex error notifications are not hidden at debug level",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-94",
+        labels: ["backend"]
+      }
+
+      test_pid = self()
+      on_message = fn message -> send(test_pid, {:app_server_message, message}) end
+
+      log =
+        capture_log(fn ->
+          assert {:ok, _result} =
+                   AppServer.run(workspace, "Surface codex error", issue, on_message: on_message)
+        end)
+
+      assert_received {:app_server_message, %{event: :notification}}
+      assert_received {:app_server_message, %{event: :turn_completed}}
+      assert log =~ "[warning]"
+      assert log =~ "Codex error notification: \"codex/event/error\""
+      assert log =~ "The gpt-5.5 model requires a newer version of Codex"
     after
       File.rm_rf(test_root)
     end
