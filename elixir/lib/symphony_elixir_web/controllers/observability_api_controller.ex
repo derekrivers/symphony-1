@@ -6,11 +6,23 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
   use Phoenix.Controller, formats: [:json]
 
   alias Plug.Conn
+  alias SymphonyElixir.WorkflowStore
   alias SymphonyElixirWeb.{Endpoint, Presenter}
 
   @spec state(Conn.t(), map()) :: Conn.t()
   def state(conn, _params) do
     json(conn, Presenter.state_payload(orchestrator(), snapshot_timeout_ms()))
+  end
+
+  @spec runtime(Conn.t(), map()) :: Conn.t()
+  def runtime(conn, _params) do
+    case WorkflowStore.runtime_identity() do
+      {:ok, identity} ->
+        json(conn, identity)
+
+      {:error, :unavailable} ->
+        error_response(conn, 503, "runtime_identity_unavailable", "Runtime identity is unavailable")
+    end
   end
 
   @spec issue(Conn.t(), map()) :: Conn.t()

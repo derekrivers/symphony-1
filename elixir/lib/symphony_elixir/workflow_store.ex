@@ -15,7 +15,7 @@ defmodule SymphonyElixir.WorkflowStore do
   defmodule State do
     @moduledoc false
 
-    defstruct [:path, :stamp, :workflow, :settings]
+    defstruct [:path, :stamp, :workflow, :settings, :runtime_identity]
   end
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -45,6 +45,28 @@ defmodule SymphonyElixir.WorkflowStore do
           {:ok, %State{settings: settings}} -> {:ok, settings}
           {:error, reason} -> {:error, reason}
         end
+    end
+  end
+
+  @type runtime_identity :: %{
+          workflow_path: Path.t(),
+          workflow_content_sha256: String.t(),
+          max_concurrent_agents: pos_integer(),
+          max_turns: pos_integer()
+        }
+
+  @spec runtime_identity() :: {:ok, runtime_identity()} | {:error, :unavailable}
+  def runtime_identity do
+    case Process.whereis(__MODULE__) do
+      pid when is_pid(pid) ->
+        try do
+          GenServer.call(pid, :runtime_identity)
+        catch
+          :exit, _reason -> {:error, :unavailable}
+        end
+
+      _ ->
+        {:error, :unavailable}
     end
   end
 
@@ -105,6 +127,10 @@ defmodule SymphonyElixir.WorkflowStore do
     end
   end
 
+  def handle_call(:runtime_identity, _from, %State{} = state) do
+    {:reply, {:ok, state.runtime_identity}, state}
+  end
+
   @impl true
   def handle_info(:poll, %State{} = state) do
     schedule_poll()
@@ -141,12 +167,12 @@ defmodule SymphonyElixir.WorkflowStore do
   end
 
   defp reload_current_path(path, state) do
-    case current_stamp(path) do
-      {:ok, stamp} when stamp == state.stamp ->
+    case load_state(path) do
+      {:ok, %State{stamp: stamp}} when stamp == state.stamp ->
         {:ok, state}
 
-      {:ok, _stamp} ->
-        reload_path(path, state)
+      {:ok, new_state} ->
+        {:ok, new_state}
 
       {:error, reason} ->
         log_reload_error(path, reason)
@@ -155,23 +181,30 @@ defmodule SymphonyElixir.WorkflowStore do
   end
 
   defp load_state(path) do
-    with {:ok, workflow} <- Workflow.load(path),
+    with {:ok, {workflow, content}} <- Workflow.load_with_content(path),
          {:ok, settings} <- Schema.parse(workflow.config),
-         :ok <- Config.validate_settings(settings),
-         {:ok, stamp} <- current_stamp(path) do
-      {:ok, %State{path: path, stamp: stamp, workflow: workflow, settings: settings}}
+         :ok <- Config.validate_settings(settings) do
+      digest = :crypto.hash(:sha256, content)
+      digest_hex = Base.encode16(digest, case: :lower)
+
+      identity = %{
+        workflow_path: path,
+        workflow_content_sha256: digest_hex,
+        max_concurrent_agents: settings.agent.max_concurrent_agents,
+        max_turns: settings.agent.max_turns
+      }
+
+      {:ok,
+       %State{
+         path: path,
+         stamp: digest,
+         workflow: workflow,
+         settings: settings,
+         runtime_identity: identity
+       }}
     else
       {:error, reason} ->
         {:error, reason}
-    end
-  end
-
-  defp current_stamp(path) when is_binary(path) do
-    with {:ok, stat} <- File.stat(path, time: :posix),
-         {:ok, content} <- File.read(path) do
-      {:ok, {stat.mtime, stat.size, :erlang.phash2(content)}}
-    else
-      {:error, reason} -> {:error, reason}
     end
   end
 

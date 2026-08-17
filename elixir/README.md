@@ -198,7 +198,10 @@ codex:
 - If a later reload fails, Symphony keeps running with the last known good workflow and logs the
   reload error until the file is fixed.
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
-  `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+  `/`, `/api/v1/state`, `/api/v1/runtime`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+  `GET /api/v1/runtime` is a safe, read-only identity/readback of the workflow configuration
+  accepted by the running process; it exposes only the workflow path, content SHA-256, and agent
+  concurrency and turn limits.
 
 ### Linear adapter profile
 
