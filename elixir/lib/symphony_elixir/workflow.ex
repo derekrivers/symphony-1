@@ -51,9 +51,22 @@ defmodule SymphonyElixir.Workflow do
 
   @spec load(Path.t()) :: {:ok, loaded_workflow()} | {:error, term()}
   def load(path) when is_binary(path) do
+    case load_with_content(path) do
+      {:ok, {workflow, _content}} -> {:ok, workflow}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc false
+  @spec load_with_content(Path.t()) ::
+          {:ok, {loaded_workflow(), binary()}} | {:error, term()}
+  def load_with_content(path) when is_binary(path) do
     case File.read(path) do
       {:ok, content} ->
-        parse(content)
+        case parse(content) do
+          {:ok, workflow} -> {:ok, {workflow, content}}
+          {:error, reason} -> {:error, reason}
+        end
 
       {:error, reason} ->
         {:error, {:missing_workflow_file, path, reason}}

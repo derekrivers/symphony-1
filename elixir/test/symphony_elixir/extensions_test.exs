@@ -141,6 +141,48 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, _pid} = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
   end
 
+  test "workflow store runtime identity tracks only accepted workflow bytes and settings" do
+    ensure_workflow_store_running()
+    path = Workflow.workflow_file_path()
+    content = File.read!(path)
+
+    assert {:ok, identity} = WorkflowStore.runtime_identity()
+
+    assert identity == %{
+             workflow_path: path,
+             workflow_content_sha256: content |> then(&:crypto.hash(:sha256, &1)) |> Base.encode16(case: :lower),
+             max_concurrent_agents: 10,
+             max_turns: 20
+           }
+
+    write_workflow_file!(path, max_concurrent_agents: 3, max_turns: 12, prompt: "Updated")
+    updated_content = File.read!(path)
+
+    assert {:ok,
+            %{
+              workflow_content_sha256: updated_digest,
+              max_concurrent_agents: 3,
+              max_turns: 12
+            }} = WorkflowStore.runtime_identity()
+
+    assert updated_digest ==
+             updated_content |> then(&:crypto.hash(:sha256, &1)) |> Base.encode16(case: :lower)
+
+    File.write!(path, "---\nagent:\n  max_concurrent_agents: nope\n---\nInvalid\n")
+    assert {:error, {:invalid_workflow_config, _message}} = WorkflowStore.force_reload()
+
+    assert {:ok,
+            %{
+              workflow_content_sha256: ^updated_digest,
+              max_concurrent_agents: 3,
+              max_turns: 12
+            }} = WorkflowStore.runtime_identity()
+
+    state = :sys.get_state(WorkflowStore)
+    assert state.stamp == :crypto.hash(:sha256, updated_content)
+    assert state.runtime_identity.workflow_content_sha256 == Base.encode16(state.stamp, case: :lower)
+  end
+
   test "workflow store init stops on missing workflow file" do
     missing_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "MISSING_WORKFLOW.md")
     Workflow.set_workflow_file_path(missing_path)
@@ -378,11 +420,65 @@ defmodule SymphonyElixir.ExtensionsTest do
              json_response(conn, 202)
   end
 
+  test "runtime observability endpoint is read-only and exposes only accepted identity fields" do
+    ensure_workflow_store_running()
+    start_test_endpoint([])
+    path = Workflow.workflow_file_path()
+    accepted_content = File.read!(path)
+
+    assert json_response(get(build_conn(), "/api/v1/runtime"), 200) == %{
+             "workflow_path" => path,
+             "workflow_content_sha256" =>
+               accepted_content
+               |> then(&:crypto.hash(:sha256, &1))
+               |> Base.encode16(case: :lower),
+             "max_concurrent_agents" => 10,
+             "max_turns" => 20
+           }
+
+    File.write!(path, "---\nagent: [\n---\nInvalid\n")
+
+    assert json_response(get(build_conn(), "/api/v1/runtime"), 200)[
+             "workflow_content_sha256"
+           ] == Base.encode16(:crypto.hash(:sha256, accepted_content), case: :lower)
+
+    assert File.read!(path) == "---\nagent: [\n---\nInvalid\n"
+
+    assert json_response(post(build_conn(), "/api/v1/runtime", %{}), 405) ==
+             %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
+  end
+
+  test "runtime observability endpoint returns 503 when workflow store is unavailable" do
+    ensure_workflow_store_running()
+    start_test_endpoint([])
+    assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, WorkflowStore)
+
+    assert json_response(get(build_conn(), "/api/v1/runtime"), 503) == %{
+             "error" => %{
+               "code" => "runtime_identity_unavailable",
+               "message" => "Runtime identity is unavailable"
+             }
+           }
+
+    assert {:ok, store_pid} = WorkflowStore.start_link()
+    Process.unlink(store_pid)
+    :sys.suspend(store_pid)
+    identity_task = Task.async(&WorkflowStore.runtime_identity/0)
+    assert_eventually(fn -> Process.info(identity_task.pid, :status) == {:status, :waiting} end)
+    Process.exit(store_pid, :kill)
+    assert Task.await(identity_task) == {:error, :unavailable}
+
+    assert {:ok, _pid} = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
+  end
+
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
     unavailable_orchestrator = Module.concat(__MODULE__, :UnavailableOrchestrator)
     start_test_endpoint(orchestrator: unavailable_orchestrator, snapshot_timeout_ms: 5)
 
     assert json_response(post(build_conn(), "/api/v1/state", %{}), 405) ==
+             %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
+
+    assert json_response(post(build_conn(), "/api/v1/runtime", %{}), 405) ==
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
     assert json_response(get(build_conn(), "/api/v1/refresh"), 405) ==
